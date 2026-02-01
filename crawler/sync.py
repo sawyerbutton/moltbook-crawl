@@ -95,6 +95,9 @@ async def crawl_comments(client: MoltbookClient, db: Database, batch_size: int =
     total = 0
     errors = 0
 
+    consecutive_failures = 0
+    max_consecutive_failures = 10
+
     try:
         while True:
             posts = db.get_posts_needing_comments(limit=batch_size)
@@ -110,6 +113,19 @@ async def crawl_comments(client: MoltbookClient, db: Database, batch_size: int =
 
                 try:
                     data = await client.get_post_comments(post_id)
+
+                    # API returning error (e.g. 405) — not a network exception
+                    if isinstance(data, dict) and data.get("success") is False:
+                        status = data.get("status", 0)
+                        if status == 405:
+                            consecutive_failures += 1
+                            if consecutive_failures >= max_consecutive_failures:
+                                logger.warning("Comments API returning 405 consistently, aborting comments crawl")
+                                db.finish_crawl_log(log_id, total, errors, "skipped_405")
+                                return
+                            continue
+
+                    consecutive_failures = 0
                     comments = data.get("comments", [])
 
                     with db.transaction() as conn:
@@ -120,7 +136,12 @@ async def crawl_comments(client: MoltbookClient, db: Database, batch_size: int =
 
                 except Exception as e:
                     errors += 1
+                    consecutive_failures += 1
                     logger.error("Failed to fetch comments for post %s: %s", post_id, e)
+                    if consecutive_failures >= max_consecutive_failures:
+                        logger.warning("Too many consecutive failures, aborting comments crawl")
+                        db.finish_crawl_log(log_id, total, errors, "aborted")
+                        return
                     continue
 
             logger.info("Comments: fetched %d so far, errors: %d", total, errors)
@@ -154,10 +175,10 @@ async def incremental_sync(client: MoltbookClient, db: Database):
                     db.upsert_post(p)
                     if p.get("comment_count", 0) == 0:
                         db.mark_comments_fetched(p["id"])
-                    total += len(posts)
 
                     if last_sync and p.get("created_at", "") < last_sync:
                         found_old = True
+                total += len(posts)
 
             offset += len(posts)
 
@@ -176,8 +197,11 @@ async def incremental_sync(client: MoltbookClient, db: Database):
         now = datetime.now(timezone.utc).isoformat()
         db.set_sync_state("posts_last_sync", now)
 
-        # Fetch comments for any new posts
-        await crawl_comments(client, db)
+        # Try to fetch comments for new posts (may fail if API is down)
+        try:
+            await crawl_comments(client, db)
+        except Exception as e:
+            logger.warning("Comments crawl skipped: %s", e)
 
         db.finish_crawl_log(log_id, total, errors)
         logger.info("Incremental sync complete: %d new/updated posts", total)
