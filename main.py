@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -18,16 +19,19 @@ def setup_logging():
     )
 
 
+def make_config(args) -> Config:
+    api_key = getattr(args, "api_key", None) or os.environ.get("MOLTBOOK_API_KEY", "")
+    return Config(api_key=api_key)
+
+
 def cmd_crawl(args):
     from crawler.sync import full_crawl
-    config = Config()
-    asyncio.run(full_crawl(config))
+    asyncio.run(full_crawl(make_config(args)))
 
 
 def cmd_sync(args):
     from crawler.sync import run_incremental
-    config = Config()
-    asyncio.run(run_incremental(config))
+    asyncio.run(run_incremental(make_config(args)))
 
 
 def cmd_serve(args):
@@ -37,14 +41,14 @@ def cmd_serve(args):
 
 def cmd_daemon(args):
     from crawler.scheduler import run_daemon
-    config = Config()
-    asyncio.run(run_daemon(config))
+    asyncio.run(run_daemon(make_config(args)))
 
 
 def main():
     setup_logging()
 
     parser = argparse.ArgumentParser(description="Moltbook Community Observatory")
+    parser.add_argument("--api-key", help="Moltbook API key (or set MOLTBOOK_API_KEY env var)")
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("crawl", help="Full crawl of all submolts, posts, and comments")

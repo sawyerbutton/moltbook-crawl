@@ -89,8 +89,27 @@ async def crawl_all_posts(client: MoltbookClient, db: Database):
         raise
 
 
+def _flatten_comments(comments: list, post_id: str, parent_id: str | None = None) -> list[dict]:
+    """Flatten nested comments (with replies) into a flat list."""
+    flat = []
+    for c in comments:
+        flat.append({
+            "id": c["id"],
+            "post_id": post_id,
+            "author": c.get("author"),
+            "parent_id": parent_id,
+            "content": c.get("content"),
+            "created_at": c.get("created_at", ""),
+            "upvotes": c.get("upvotes", 0),
+            "downvotes": c.get("downvotes", 0),
+        })
+        if c.get("replies"):
+            flat.extend(_flatten_comments(c["replies"], post_id, parent_id=c["id"]))
+    return flat
+
+
 async def crawl_comments(client: MoltbookClient, db: Database, batch_size: int = 100):
-    """Fetch comments for posts that haven't been fetched yet."""
+    """Fetch comments via GET /posts/{id} (returns post + embedded comments)."""
     log_id = db.start_crawl_log("comments")
     total = 0
     errors = 0
@@ -112,27 +131,28 @@ async def crawl_comments(client: MoltbookClient, db: Database, batch_size: int =
                     continue
 
                 try:
-                    data = await client.get_post_comments(post_id)
+                    data = await client.get_post_detail(post_id)
 
-                    # API returning error (e.g. 405) — not a network exception
+                    # API returning error
                     if isinstance(data, dict) and data.get("success") is False:
                         status = data.get("status", 0)
-                        if status == 405:
-                            consecutive_failures += 1
-                            if consecutive_failures >= max_consecutive_failures:
-                                logger.warning("Comments API returning 405 consistently, aborting comments crawl")
-                                db.finish_crawl_log(log_id, total, errors, "skipped_405")
-                                return
-                            continue
+                        consecutive_failures += 1
+                        errors += 1
+                        if consecutive_failures >= max_consecutive_failures:
+                            logger.warning("Too many consecutive API errors (last: %d), aborting", status)
+                            db.finish_crawl_log(log_id, total, errors, f"aborted_{status}")
+                            return
+                        continue
 
                     consecutive_failures = 0
-                    comments = data.get("comments", [])
+                    raw_comments = data.get("comments", [])
+                    flat = _flatten_comments(raw_comments, post_id)
 
                     with db.transaction() as conn:
-                        for c in comments:
+                        for c in flat:
                             db.upsert_comment(c, post_id)
                         db.mark_comments_fetched(post_id)
-                        total += len(comments)
+                        total += len(flat)
 
                 except Exception as e:
                     errors += 1

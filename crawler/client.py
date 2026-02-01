@@ -51,9 +51,10 @@ class MoltbookClient:
         self._error_count = 0
 
     async def __aenter__(self):
-        self.session = aiohttp.ClientSession(
-            headers={"User-Agent": self.config.user_agent},
-        )
+        headers = {"User-Agent": self.config.user_agent}
+        if self.config.api_key:
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
+        self.session = aiohttp.ClientSession(headers=headers)
         return self
 
     async def __aexit__(self, *exc):
@@ -124,5 +125,6 @@ class MoltbookClient:
     async def get_posts(self, sort: str = "new", offset: int = 0, limit: int = 50) -> dict:
         return await self.get("/posts", {"sort": sort, "limit": limit, "offset": offset})
 
-    async def get_post_comments(self, post_id: str) -> dict:
-        return await self.get(f"/posts/{post_id}/comments")
+    async def get_post_detail(self, post_id: str) -> dict:
+        """Get post detail with embedded comments (requires auth)."""
+        return await self.get(f"/posts/{post_id}")

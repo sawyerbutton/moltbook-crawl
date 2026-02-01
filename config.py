@@ -23,5 +23,8 @@ class Config:
     # Incremental sync
     sync_interval_minutes: int = 15
 
+    # Authentication
+    api_key: str = ""
+
     # User agent
     user_agent: str = "MoltbookCrawler/1.0"
